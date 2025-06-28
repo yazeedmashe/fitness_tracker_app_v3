@@ -8,7 +8,7 @@ db = sqlite3.connect(r"Database\FT_DB.db")
 
 # One-time user DB init
 def init_db():
-    conn = sqlite3.connect("users.db")
+    conn = db
     cursor = conn.cursor()
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS users (
