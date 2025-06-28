@@ -4,7 +4,7 @@ import sqlite3
 import hashlib
 
 # Connect to your main app DB
-db = sqlite3.connect(r"C:\Users\Admin\Desktop\New folder\Database\FT_DB.db")
+db = sqlite3.connect(r"Database\FT_DB.db")
 
 # One-time user DB init
 def init_db():
