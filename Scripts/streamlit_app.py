@@ -79,7 +79,7 @@ if not st.session_state.logged_in:
                 st.session_state.user = user
                 st.session_state.user_id = user_id
                 st.success(f"Welcome, {user}!")
-                st.experimental_rerun()
+                st.rerun()
             else:
                 st.error("Invalid credentials.")
 
@@ -118,7 +118,7 @@ else:
 
     if logout:
         st.session_state.logged_in = False
-        st.experimental_rerun()
+        st.rerun()
 
     user_id = st.session_state.user_id
     with sqlite3.connect(DB_PATH) as conn:
