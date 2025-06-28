@@ -1,48 +1,44 @@
 import streamlit as st
 import pandas as pd
-import sqlite3
 import hashlib
+from sqlalchemy import create_engine, text
 
-DB_PATH = r"Database/FT_DB.db"
+# Load DB credentials from .streamlit/secrets.toml
+db_url = st.secrets["database"]["url"]
+engine = create_engine(db_url)
 
-# Initialize DB (runs only once)
+# Initialize tables (if needed)
 def init_db():
-    with sqlite3.connect(DB_PATH) as conn:
-        cursor = conn.cursor()
-        cursor.execute("""
+    with engine.connect() as conn:
+        conn.execute(text("""
             CREATE TABLE IF NOT EXISTS users (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id SERIAL PRIMARY KEY,
                 username TEXT UNIQUE NOT NULL,
                 password TEXT NOT NULL
             )
-        """)
+        """))
         # Assume exercises and gym_log tables already exist
-        conn.commit()
 
+# Password hashing
 def hash_password(password):
     return hashlib.sha256(password.encode()).hexdigest()
 
+# Add a new user
 def add_user(username, password):
-    with sqlite3.connect(DB_PATH) as conn:
-        cursor = conn.cursor()
-        cursor.execute(
-            "INSERT INTO users (username, password) VALUES (?, ?)",
-            (username, hash_password(password))
+    with engine.begin() as conn:
+        conn.execute(
+            text("INSERT INTO users (username, password) VALUES (:u, :p)"),
+            {"u": username, "p": hash_password(password)}
         )
-        conn.commit()
 
+# Authenticate user
 def authenticate_user(username, password):
-    with sqlite3.connect(DB_PATH) as conn:
-        cursor = conn.cursor()
-        cursor.execute(
-            "SELECT id FROM users WHERE username = ? AND password = ?",
-            (username, hash_password(password))
-        )
-        result = cursor.fetchone()
-        if result:
-            return result[0]  # Return user id
-        else:
-            return None
+    with engine.connect() as conn:
+        result = conn.execute(
+            text("SELECT id FROM users WHERE username = :u AND password = :p"),
+            {"u": username, "p": hash_password(password)}
+        ).fetchone()
+        return result[0] if result else None
 
 # Initialize DB
 init_db()
@@ -65,8 +61,8 @@ if not st.session_state.logged_in:
                 try:
                     add_user(new_user, new_pass)
                     st.success("Account created! Please login.")
-                except sqlite3.IntegrityError:
-                    st.error("Username already exists.")
+                except Exception as e:
+                    st.error(f"Signup error: {e}")
 
     elif menu == "Login":
         st.subheader("Login")
@@ -88,8 +84,7 @@ else:
     st.write("This is your gym progress tracker, personalized for you!")
 
     st.sidebar.title("Gym Session Logger")
-    with sqlite3.connect(DB_PATH) as conn:
-        df = pd.read_sql("SELECT * FROM exercises", conn)
+    df = pd.read_sql("SELECT * FROM exercises", engine)
 
     exercise_names = st.sidebar.multiselect("Select exercise:", df['name'].unique())
     total_weight = st.sidebar.text_input("Total Weight Moved (Kg):")
@@ -107,13 +102,14 @@ else:
             if not total_weight.isdigit() or not total_reps.isdigit():
                 st.error("Please enter numeric values for weight and reps.")
             else:
-                with sqlite3.connect(DB_PATH) as conn:
-                    cursor = conn.cursor()
-                    cursor.execute(
-                        "INSERT INTO gym_log (userid, exercise_id, total_weight, total_reps, session_date) VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)",
-                        (user_id, exer_id, int(total_weight), int(total_reps))
+                with engine.begin() as conn:
+                    conn.execute(
+                        text("""
+                            INSERT INTO gym_log (userid, exercise_id, total_weight, total_reps, session_date)
+                            VALUES (:uid, :eid, :w, :r, CURRENT_TIMESTAMP)
+                        """),
+                        {"uid": user_id, "eid": exer_id, "w": int(total_weight), "r": int(total_reps)}
                     )
-                    conn.commit()
                 st.success("Log saved successfully.")
 
     if logout:
@@ -121,10 +117,9 @@ else:
         st.rerun()
 
     user_id = st.session_state.user_id
-    with sqlite3.connect(DB_PATH) as conn:
-        total_weight_df = pd.read_sql("SELECT SUM(total_weight) AS total_weight FROM gym_log WHERE userid = ?", conn, params=(user_id,))
-        total_reps_df = pd.read_sql("SELECT SUM(total_reps) AS total_reps FROM gym_log WHERE userid = ?", conn, params=(user_id,))
-        exer_count_df = pd.read_sql("SELECT COUNT(*) AS rep_count FROM gym_log WHERE userid = ?", conn, params=(user_id,))
+    total_weight_df = pd.read_sql("SELECT SUM(total_weight) AS total_weight FROM gym_log WHERE userid = %s", engine, params=[(user_id,)])
+    total_reps_df = pd.read_sql("SELECT SUM(total_reps) AS total_reps FROM gym_log WHERE userid = %s", engine, params=[(user_id,)])
+    exer_count_df = pd.read_sql("SELECT COUNT(*) AS rep_count FROM gym_log WHERE userid = %s", engine, params=[(user_id,)])
 
     st.markdown("Key Insights From Your Gym Sessions:")
     col1, col2, col3 = st.columns(3)
@@ -134,48 +129,55 @@ else:
 
     st.markdown("---")
 
-    with sqlite3.connect(DB_PATH) as conn:
-        weight_over_time = pd.read_sql(
-            "SELECT DATE(session_date) AS date, SUM(total_weight) AS total_weight FROM gym_log WHERE userid = ? GROUP BY DATE(session_date)",
-            conn, params=(user_id,)
-        )
+    weight_over_time = pd.read_sql(
+        "SELECT DATE(session_date) AS date, SUM(total_weight) AS total_weight FROM gym_log WHERE userid = %s GROUP BY DATE(session_date)",
+        engine, params=[(user_id,)]
+    )
     st.markdown("Your Progress Over Time")
     st.line_chart(weight_over_time.set_index('date')['total_weight'])
 
     st.markdown("---")
-
     col_chart1, col_chart2 = st.columns(2)
 
-    with sqlite3.connect(DB_PATH) as conn:
-        exer_dist = pd.read_sql(
-            "SELECT e.name, COUNT(*) AS count FROM gym_log g INNER JOIN exercises e ON g.exercise_id = e.id WHERE userid = ? GROUP BY e.name ORDER BY count DESC",
-            conn, params=(user_id,)
-        )
+    exer_dist = pd.read_sql(
+        """
+        SELECT e.name, COUNT(*) AS count 
+        FROM gym_log g 
+        INNER JOIN exercises e ON g.exercise_id = e.id 
+        WHERE userid = %s 
+        GROUP BY e.name ORDER BY count DESC
+        """,
+        engine, params=[(user_id,)]
+    )
     with col_chart1:
         st.markdown("Your Exercise Distribution:")
-        st.bar_chart(exer_dist.set_index('name')['count'].sort_values(ascending=False))
+        st.bar_chart(exer_dist.set_index('name')['count'])
 
-    with sqlite3.connect(DB_PATH) as conn:
-        extype_dist = pd.read_sql(
-            "SELECT e.type AS type, COUNT(*) AS count FROM gym_log g INNER JOIN exercises e ON g.exercise_id = e.id WHERE userid = ? GROUP BY e.type ORDER BY count DESC",
-            conn, params=(user_id,)
-        )
+    extype_dist = pd.read_sql(
+        """
+        SELECT e.type AS type, COUNT(*) AS count 
+        FROM gym_log g 
+        INNER JOIN exercises e ON g.exercise_id = e.id 
+        WHERE userid = %s 
+        GROUP BY e.type ORDER BY count DESC
+        """,
+        engine, params=[(user_id,)]
+    )
     with col_chart2:
         st.markdown("Breakdown by Exercise Type:")
         st.bar_chart(extype_dist.set_index('type')['count'])
 
     st.markdown("---")
 
-    with sqlite3.connect(DB_PATH) as conn:
-        records = pd.read_sql(
-            """
-            SELECT e.name AS exercise_name, MAX(total_weight) AS best_weight
-            FROM gym_log g
-            INNER JOIN exercises e ON g.exercise_id = e.id
-            WHERE userid = ?
-            GROUP BY exercise_name
-            """,
-            conn, params=(user_id,)
-        )
+    records = pd.read_sql(
+        """
+        SELECT e.name AS exercise_name, MAX(total_weight) AS best_weight 
+        FROM gym_log g 
+        INNER JOIN exercises e ON g.exercise_id = e.id 
+        WHERE userid = %s 
+        GROUP BY exercise_name
+        """,
+        engine, params=[(user_id,)]
+    )
     st.markdown("Your Personal Best:")
     st.dataframe(records.sort_values(by='best_weight', ascending=False))
