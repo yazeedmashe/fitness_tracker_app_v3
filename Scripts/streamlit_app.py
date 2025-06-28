@@ -22,14 +22,14 @@ def hash_password(password):
     return hashlib.sha256(password.encode()).hexdigest()
 
 def add_user(username, password):
-    conn = sqlite3.connect("users.db")
+    conn = db
     cursor = conn.cursor()
     cursor.execute("INSERT INTO users (username, password) VALUES (?, ?)",
                    (username, hash_password(password)))
     conn.commit()
 
 def authenticate_user(username, password):
-    conn = sqlite3.connect("users.db")
+    conn = db
     cursor = conn.cursor()
     cursor.execute("SELECT * FROM users WHERE username = ? AND password = ?",
                    (username, hash_password(password)))
