@@ -3,55 +3,54 @@ import pandas as pd
 import sqlite3
 import hashlib
 
-# Connect to your main app DB
-db = sqlite3.connect(r"C:\Users\Admin\Desktop\New folder\Database\FT_DB.db")
+DB_PATH = r"Database/FT_DB.db"
 
-# One-time user DB init
+# Initialize DB (runs only once)
 def init_db():
-    conn = db
-    cursor = conn.cursor()
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS users (
-            username TEXT PRIMARY KEY,
-            password TEXT NOT NULL
-        )
-    """)
-    conn.commit()
+    with sqlite3.connect(DB_PATH) as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                username TEXT UNIQUE NOT NULL,
+                password TEXT NOT NULL
+            )
+        """)
+        # Assume exercises and gym_log tables already exist
+        conn.commit()
 
 def hash_password(password):
     return hashlib.sha256(password.encode()).hexdigest()
 
 def add_user(username, password):
-    conn = db
-    cursor = conn.cursor()
-    cursor.execute("INSERT INTO users (username, password) VALUES (?, ?)",
-                   (username, hash_password(password)))
-    conn.commit()
+    with sqlite3.connect(DB_PATH) as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "INSERT INTO users (username, password) VALUES (?, ?)",
+            (username, hash_password(password))
+        )
+        conn.commit()
 
 def authenticate_user(username, password):
-    conn = db
-    cursor = conn.cursor()
-    cursor.execute("SELECT * FROM users WHERE username = ? AND password = ?",
-                   (username, hash_password(password)))
-    result = cursor.fetchone()
-    return result is not None
+    with sqlite3.connect(DB_PATH) as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT id FROM users WHERE username = ? AND password = ?",
+            (username, hash_password(password))
+        )
+        result = cursor.fetchone()
+        if result:
+            return result[0]  # Return user id
+        else:
+            return None
 
-def get_user_id(username):
-    conn = db
-    cursor = conn.cursor()
-    cursor.execute("SELECT id FROM users WHERE username = ?", (username,))
-    result = cursor.fetchone()
-    return result[0] if result else None
-
-
-# Initialize DB (runs only once)
+# Initialize DB
 init_db()
 
 # Session setup
 if "logged_in" not in st.session_state:
     st.session_state.logged_in = False
 
-# If NOT logged in, show login/signup
 if not st.session_state.logged_in:
     menu = st.radio("Choose Option", ['Login', 'Sign Up'])
 
@@ -60,95 +59,123 @@ if not st.session_state.logged_in:
         new_user = st.text_input("Username")
         new_pass = st.text_input("Password", type="password")
         if st.button("Sign Up"):
-            try:
-                add_user(new_user, new_pass)
-                st.success("Account created! Please login.")
-            except sqlite3.IntegrityError:
-                st.error("Username already exists")
+            if not new_user or not new_pass:
+                st.error("Please enter both username and password.")
+            else:
+                try:
+                    add_user(new_user, new_pass)
+                    st.success("Account created! Please login.")
+                except sqlite3.IntegrityError:
+                    st.error("Username already exists.")
 
     elif menu == "Login":
         st.subheader("Login")
         user = st.text_input("Username")
         password = st.text_input("Password", type="password")
         if st.button("Login"):
-            if authenticate_user(user, password):
+            user_id = authenticate_user(user, password)
+            if user_id:
                 st.session_state.logged_in = True
                 st.session_state.user = user
+                st.session_state.user_id = user_id
                 st.success(f"Welcome, {user}!")
-                st.rerun()
+                st.experimental_rerun()
             else:
-                st.error("Invalid credentials")
+                st.error("Invalid credentials.")
 
-# If logged in, show dashboard
 else:
     st.title(f"{st.session_state.user}'s Dashboard")
     st.write("This is your gym progress tracker, personalized for you!")
+
     st.sidebar.title("Gym Session Logger")
-    # fetching excersice list
-    df = pd.read_sql("SELECT * FROM exercises",db)
-    excersice_name = st.sidebar.multiselect("Select excersice:",df['name'].unique())
-    total_weight = st.sidebar.text_input("Total Weight Moved (Kg) :")
-    total_reps = st.sidebar.text_input("Total Repetitions Performed :")
+    with sqlite3.connect(DB_PATH) as conn:
+        df = pd.read_sql("SELECT * FROM exercises", conn)
+
+    exercise_names = st.sidebar.multiselect("Select exercise:", df['name'].unique())
+    total_weight = st.sidebar.text_input("Total Weight Moved (Kg):")
+    total_reps = st.sidebar.text_input("Total Repetitions Performed:")
     submit = st.sidebar.button("Submit")
     logout = st.sidebar.button("Logout")
+
     if submit:
-        exer_row = df[df["name"].isin(excersice_name)]
-        if not exer_row.empty:
-            exer_id = int(exer_row['id'].values[0])
-            user_id = get_user_id(st.session_state.user)
-            if user_id is None:
-                st.error("User Not Found in DB")
-            elif not total_weight.isdigit() or not total_reps.isdigit():
-                st.error("Please Enter Numeric Values for weight and reps")
-            else:
-                conn = db
-                cursor = db.cursor()
-                cursor.execute("INSERT INTO gym_log (userid,exercise_id,total_weight,total_reps,session_date) VALUES (?,?,?,?,CURRENT_TIMESTAMP)",(user_id,exer_id,int(total_weight),int(total_reps)))
-                conn.commit()
-                st.success("Log Saved Succesfully")
+        exer_row = df[df["name"].isin(exercise_names)]
+        if exer_row.empty:
+            st.error("Selected exercise not found.")
         else:
-            st.error("Selected Exercise Not Found")
-    
+            exer_id = int(exer_row['id'].values[0])
+            user_id = st.session_state.user_id
+            if not total_weight.isdigit() or not total_reps.isdigit():
+                st.error("Please enter numeric values for weight and reps.")
+            else:
+                with sqlite3.connect(DB_PATH) as conn:
+                    cursor = conn.cursor()
+                    cursor.execute(
+                        "INSERT INTO gym_log (userid, exercise_id, total_weight, total_reps, session_date) VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)",
+                        (user_id, exer_id, int(total_weight), int(total_reps))
+                    )
+                    conn.commit()
+                st.success("Log saved successfully.")
+
     if logout:
         st.session_state.logged_in = False
-        st.rerun()
-    
-    total_weight = pd.read_sql("SELECT sum(total_weight) from gym_log WHERE userid = ?",db,params=(get_user_id(st.session_state.user),))
-    total_reps = pd.read_sql('SELECT sum(total_reps) from gym_log WHERE userid = ?',db,params=(get_user_id(st.session_state.user),))
-    exer_count = pd.read_sql("SELECT count( * ) AS rep_count FROM gym_log WHERE userid = ?",db,params=(get_user_id(st.session_state.user),))
+        st.experimental_rerun()
 
-    st.markdown("Key Insights From your Gym Sessions :")
-    col1,col2,col3 = st.columns(3)
-    col1.metric("Total Weight Moved", int(total_weight.iloc[0, 0] or 0))
-    col2.metric("Total Reps Performed", int(total_reps.iloc[0, 0] or 0))
-    col3.metric("Exercises Logged", int(exer_count.iloc[0, 0] or 0))
+    user_id = st.session_state.user_id
+    with sqlite3.connect(DB_PATH) as conn:
+        total_weight_df = pd.read_sql("SELECT SUM(total_weight) AS total_weight FROM gym_log WHERE userid = ?", conn, params=(user_id,))
+        total_reps_df = pd.read_sql("SELECT SUM(total_reps) AS total_reps FROM gym_log WHERE userid = ?", conn, params=(user_id,))
+        exer_count_df = pd.read_sql("SELECT COUNT(*) AS rep_count FROM gym_log WHERE userid = ?", conn, params=(user_id,))
+
+    st.markdown("Key Insights From Your Gym Sessions:")
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Total Weight Moved", int(total_weight_df.iloc[0, 0] or 0))
+    col2.metric("Total Reps Performed", int(total_reps_df.iloc[0, 0] or 0))
+    col3.metric("Exercises Logged", int(exer_count_df.iloc[0, 0] or 0))
 
     st.markdown("---")
 
-    weight_over_time = pd.read_sql("select date(session_date) as date, sum(total_weight) as total_weight from gym_log WHERE userid = ? GROUP BY DATE(session_date)",db,params=(get_user_id(st.session_state.user),))
-
+    with sqlite3.connect(DB_PATH) as conn:
+        weight_over_time = pd.read_sql(
+            "SELECT DATE(session_date) AS date, SUM(total_weight) AS total_weight FROM gym_log WHERE userid = ? GROUP BY DATE(session_date)",
+            conn, params=(user_id,)
+        )
     st.markdown("Your Progress Over Time")
-
     st.line_chart(weight_over_time.set_index('date')['total_weight'])
 
     st.markdown("---")
 
     col_chart1, col_chart2 = st.columns(2)
 
+    with sqlite3.connect(DB_PATH) as conn:
+        exer_dist = pd.read_sql(
+            "SELECT e.name, COUNT(*) AS count FROM gym_log g INNER JOIN exercises e ON g.exercise_id = e.id WHERE userid = ? GROUP BY e.name ORDER BY count DESC",
+            conn, params=(user_id,)
+        )
     with col_chart1:
-        st.markdown("Your Exercise Distribution :")
-        exer_dist = pd.read_sql("select e.name, count(*) as count from gym_log g inner join exercises e on g.exercise_id = e.id where userid = ? group by e.name order by count(*) DESC",db,params=(get_user_id(st.session_state.user),))
+        st.markdown("Your Exercise Distribution:")
         st.bar_chart(exer_dist.set_index('name')['count'].sort_values(ascending=False))
-    
+
+    with sqlite3.connect(DB_PATH) as conn:
+        extype_dist = pd.read_sql(
+            "SELECT e.type AS type, COUNT(*) AS count FROM gym_log g INNER JOIN exercises e ON g.exercise_id = e.id WHERE userid = ? GROUP BY e.type ORDER BY count DESC",
+            conn, params=(user_id,)
+        )
     with col_chart2:
-        st.markdown("Breakdown by exercise type :")
-        extype_dist = pd.read_sql("select e.type as type, count(*) as count from gym_log g inner join exercises e on g.exercise_id = e.id where userid = ? group by e.type order by count(*) DESC",db,params=(get_user_id(st.session_state.user),))
+        st.markdown("Breakdown by Exercise Type:")
         st.bar_chart(extype_dist.set_index('type')['count'])
 
     st.markdown("---")
 
-    st.markdown("Your Personal Best :")
-
-    records = pd.read_sql("""SELECT e.name as exercise_name, MAX(total_weight) as best_weight FROM gym_log inner join exercises e on gym_log.exercise_id = e.id WHERE userid = ? GROUP BY exercise_name""", db, params=(get_user_id(st.session_state.user),))
-    st.dataframe(records.sort_values(by='best_weight',ascending=False))
-
+    with sqlite3.connect(DB_PATH) as conn:
+        records = pd.read_sql(
+            """
+            SELECT e.name AS exercise_name, MAX(total_weight) AS best_weight
+            FROM gym_log g
+            INNER JOIN exercises e ON g.exercise_id = e.id
+            WHERE userid = ?
+            GROUP BY exercise_name
+            """,
+            conn, params=(user_id,)
+        )
+    st.markdown("Your Personal Best:")
+    st.dataframe(records.sort_values(by='best_weight', ascending=False))
