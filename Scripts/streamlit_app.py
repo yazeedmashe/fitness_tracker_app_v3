@@ -4,7 +4,7 @@ import sqlite3
 import hashlib
 
 # Connect to your main app DB
-db = sqlite3.connect(r"Database/FT_DB.db")
+db = sqlite3.connect(r"C:\Users\Admin\Desktop\New folder\Database\FT_DB.db")
 
 # One-time user DB init
 def init_db():
@@ -90,6 +90,7 @@ else:
     total_weight = st.sidebar.text_input("Total Weight Moved (Kg) :")
     total_reps = st.sidebar.text_input("Total Repetitions Performed :")
     submit = st.sidebar.button("Submit")
+    logout = st.sidebar.button("Logout")
     if submit:
         exer_row = df[df["name"].isin(excersice_name)]
         if not exer_row.empty:
@@ -107,6 +108,10 @@ else:
                 st.success("Log Saved Succesfully")
         else:
             st.error("Selected Exercise Not Found")
+    
+    if logout:
+        st.session_state.logged_in = False
+        st.rerun()
     
     total_weight = pd.read_sql("SELECT sum(total_weight) from gym_log WHERE userid = ?",db,params=(get_user_id(st.session_state.user),))
     total_reps = pd.read_sql('SELECT sum(total_reps) from gym_log WHERE userid = ?',db,params=(get_user_id(st.session_state.user),))
@@ -147,7 +152,3 @@ else:
     records = pd.read_sql("""SELECT e.name as exercise_name, MAX(total_weight) as best_weight FROM gym_log inner join exercises e on gym_log.exercise_id = e.id WHERE userid = ? GROUP BY exercise_name""", db, params=(get_user_id(st.session_state.user),))
     st.dataframe(records.sort_values(by='best_weight',ascending=False))
 
-
-    if st.button("Logout"):
-        st.session_state.logged_in = False
-        st.rerun()
